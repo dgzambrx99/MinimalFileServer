@@ -1,0 +1,124 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <link href="/css/bootstrap.min.css" rel="stylesheet">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Minimal File Server</title>
+    <script>
+        async function fetchFiles(path = '') {
+            const response = await fetch(`/api/files/${path}`);
+            const files = await response.json();
+
+            console.log('Fetched files:', files);
+
+            document.getElementById('file-list').innerHTML = files.map(file => `
+                    <div class="list-group-item d-flex justify-content-between align-items-center">
+                        <div>
+                            ${file.isDirectory
+                    ? `<a href="#" onclick="fetchFiles('${file.path}')">${file.name}</a>`
+                    : `<a href="/api/files/download/${file.path}" download>${file.name}</a>`
+                }
+                        </div>
+                        <div>
+                            ${!file.isDirectory ? `(${file.size !== null ? `${file.size} bytes` : 'Unknown size'})` : ''}
+                            ${!file.isDirectory ? `<button class="btn btn-link btn-sm" onclick="previewFile('${file.path}')">Preview</button>` : ''}
+                        </div>
+                    </div>
+                `).join('');
+        }
+
+        async function uploadFiles(event) {
+            event.preventDefault();
+            const formData = new FormData(document.getElementById('upload-form'));
+            const response = await fetch('/api/files/upload', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
+            alert(result.Message);
+            fetchFiles(); // Refresh the file list after uploading
+        }
+
+        async function searchFiles() {
+            const query = document.getElementById('search-input').value;
+            const response = await fetch(`/api/files/search?query=${encodeURIComponent(query)}`);
+            const files = await response.json();
+
+            document.getElementById('file-list').innerHTML = files.map(file => `
+                    <div class="list-group-item d-flex justify-content-between align-items-center">
+                        <div>
+                            ${file.isDirectory
+                    ? `<a href="#" onclick="fetchFiles('${file.path}')">${file.name}</a>`
+                    : `<a href="/api/files/download/${file.path}" download>${file.name}</a>`
+                }
+                        </div>
+                        <div>
+                            ${!file.isDirectory ? `(${file.size !== null ? `${file.size} bytes` : 'Unknown size'})` : ''}
+                            ${!file.isDirectory ? `<button class="btn btn-link btn-sm" onclick="previewFile('${file.path}')">Preview</button>` : ''}
+                        </div>
+                    </div>
+                `).join('');
+        }
+
+        async function previewFile(filePath) {
+            const response = await fetch(`/api/files/download/${filePath}`);
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+
+            const fileExtension = filePath.split('.').pop().toLowerCase();
+            const modalBody = document.getElementById('preview-modal-body');
+
+            if (['jpg', 'jpeg', 'png', 'gif'].includes(fileExtension)) {
+                modalBody.innerHTML = `<img src="${url}" class="img-fluid" />`;
+            } else if (['txt', 'log'].includes(fileExtension)) {
+                const text = await blob.text();
+                modalBody.innerHTML = `<pre>${text}</pre>`;
+            } else {
+                modalBody.innerHTML = `<p>Preview not available for this file type.</p>`;
+            }
+
+            const previewModal = new bootstrap.Modal(document.getElementById('preview-modal'));
+            previewModal.show();
+        }
+
+        window.onload = () => fetchFiles();
+    </script>
+</head>
+<body class="container mt-4">
+    <nav class="navbar navbar-light bg-light mb-4">
+        <span class="navbar-brand mb-0 h1">Minimal File Server</span>
+    </nav>
+
+    <div class="mb-3">
+        <form id="upload-form" onsubmit="uploadFiles(event)">
+            <div class="input-group">
+                <input class="form-control" type="file" name="files" multiple />
+                <button class="btn btn-primary" type="submit">Upload</button>
+            </div>
+        </form>
+    </div>
+
+    <div class="input-group mb-3">
+        <input type="text" id="search-input" class="form-control" placeholder="Search files..." />
+        <button class="btn btn-outline-secondary" onclick="searchFiles()">Search</button>
+    </div>
+
+    <div id="file-list" class="list-group"></div>
+
+    <!-- Preview Modal -->
+    <div class="modal fade" id="preview-modal" tabindex="-1" aria-labelledby="preview-modal-label" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="preview-modal-label">File Preview</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" id="preview-modal-body"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
