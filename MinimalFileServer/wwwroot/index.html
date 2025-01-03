@@ -50,7 +50,7 @@
                 const response = await fetch(`/api/files/${path}`);
                 const files = await response.json();
 
-                //console.log('Fetched files:', files);
+                console.log('Fetched files:', files);
 
                 document.getElementById('file-list').innerHTML = files.map(file => `
                     <div class="list-group-item d-flex justify-content-between align-items-center">
