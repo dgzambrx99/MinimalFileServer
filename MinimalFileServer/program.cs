@@ -1,38 +1,40 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.FileProviders;
 using System.IO;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddSingleton<FileService>();
+// Inject FileService with RootPath from configuration
+var rootPath = builder.Configuration["FileServerSettings:RootPath"] ?? Path.Combine(Directory.GetCurrentDirectory(), "files");
+builder.Services.AddSingleton<FileService>(_ => new FileService(rootPath));
+
+// Explicitly configure Kestrel using appsettings.json
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Configure(builder.Configuration.GetSection("Kestrel"));
+});
 
 var app = builder.Build();
 
 app.UseMiddleware<BasicAuthenticationMiddleware>();
 
-
-// Serve static files from the "wwwroot" folder
-app.UseDefaultFiles(); // Ensures index.html is served automatically
-app.UseStaticFiles();  // Serves static files from wwwroot
-
+// Serve static files from wwwroot
+app.UseDefaultFiles();
+app.UseStaticFiles();
 
 // API route for browsing files and directories
 app.MapGet("/api/files/{*path}", (string? path, FileService fileService) =>
 {
-    var rootPath = Path.Combine(Directory.GetCurrentDirectory(), "files");
-    var fullPath = Path.Combine(rootPath, path ?? string.Empty);
-
     try
     {
-        var contents = fileService.GetDirectoryContents(fullPath);
+        var contents = fileService.GetDirectoryContents(path);
         return Results.Ok(contents.Select(item => new
         {
             item.Name,
-            Path = Path.GetRelativePath(rootPath, item.FullName).Replace("\\", "/"),
-            IsDirectory = item.Attributes.HasFlag(FileAttributes.Directory),
-            Size = item is FileInfo fileInfo ? fileInfo.Length : (long?)null
+            item.Path,
+            item.IsDirectory,
+            item.Size
         }));
     }
     catch (DirectoryNotFoundException)
@@ -46,58 +48,57 @@ app.MapGet("/api/files/{*path}", (string? path, FileService fileService) =>
 });
 
 // API route for downloading files
-app.MapGet("/api/files/download/{*filePath}", (string filePath) =>
+app.MapGet("/api/files/download/{*filePath}", (string filePath, FileService fileService) =>
 {
-    var rootPath = Path.Combine(Directory.GetCurrentDirectory(), "files");
-    var fullPath = Path.Combine(rootPath, filePath);
-
-    if (!File.Exists(fullPath))
+    try
+    {
+        var file = fileService.GetFile(filePath);
+        return Results.File(file.FullPath, "application/octet-stream", file.Name);
+    }
+    catch (FileNotFoundException)
     {
         return Results.NotFound("File not found.");
     }
-
-    return Results.File(fullPath, "application/octet-stream", Path.GetFileName(fullPath));
+    catch (Exception ex)
+    {
+        return Results.Problem(ex.Message);
+    }
 });
 
 // API route for uploading files
-app.MapPost("/api/files/upload/{*path}", async (HttpRequest request, string? path) =>
+app.MapPost("/api/files/upload/{*path}", async (HttpRequest request, string? path, FileService fileService) =>
 {
-    var rootPath = Path.Combine(Directory.GetCurrentDirectory(), "files");
-    var targetDirectory = Path.Combine(rootPath, path ?? string.Empty);
-
-    if (!Directory.Exists(targetDirectory))
-    {
-        Directory.CreateDirectory(targetDirectory);
-    }
-
     if (!request.Form.Files.Any())
     {
         return Results.BadRequest("No files were uploaded.");
     }
 
-    foreach (var file in request.Form.Files)
-    {
-        var filePath = Path.Combine(targetDirectory, file.FileName);
-        using var stream = new FileStream(filePath, FileMode.Create);
-        await file.CopyToAsync(stream);
-    }
-
-    return Results.Ok(new { Message = "Files uploaded successfully." });
-});
-
-app.MapGet("/api/files/search", (string query, FileService fileService) =>
-{
-    var rootPath = Path.Combine(Directory.GetCurrentDirectory(), "files");
-
     try
     {
-        var results = fileService.SearchFiles(rootPath, query);
+        foreach (var file in request.Form.Files)
+        {
+            await fileService.SaveFileAsync(file, path);
+        }
+        return Results.Ok(new { Message = "Files uploaded successfully." });
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem(ex.Message);
+    }
+});
+
+// API route for searching files
+app.MapGet("/api/files/search", (string query, FileService fileService) =>
+{
+    try
+    {
+        var results = fileService.SearchFiles(query);
         return Results.Ok(results.Select(item => new
         {
             item.Name,
-            Path = Path.GetRelativePath(rootPath, item.FullName).Replace("\\", "/"),
-            IsDirectory = item.Attributes.HasFlag(FileAttributes.Directory),
-            Size = item is FileInfo fileInfo ? fileInfo.Length : (long?)null
+            item.Path,
+            item.IsDirectory,
+            item.Size
         }));
     }
     catch (Exception ex)
@@ -106,31 +107,106 @@ app.MapGet("/api/files/search", (string query, FileService fileService) =>
     }
 });
 
-
 app.Run();
 
+// FileService Class
 public class FileService
 {
-    public IEnumerable<FileSystemInfo> GetDirectoryContents(string path)
+    private readonly string _rootPath;
+
+    public FileService(string rootPath)
     {
-        if (!Directory.Exists(path))
+        _rootPath = rootPath;
+        if (!Directory.Exists(_rootPath))
+        {
+            Directory.CreateDirectory(_rootPath);
+        }
+    }
+
+    public IEnumerable<FileItem> GetDirectoryContents(string? path)
+    {
+        var fullPath = GetFullPath(path);
+
+        if (!Directory.Exists(fullPath))
         {
             throw new DirectoryNotFoundException($"The directory '{path}' does not exist.");
         }
 
-        var directoryInfo = new DirectoryInfo(path);
-        return directoryInfo.GetFileSystemInfos();
+        return new DirectoryInfo(fullPath).GetFileSystemInfos()
+            .Select(info => new FileItem
+            {
+                Name = info.Name,
+                Path = Path.GetRelativePath(_rootPath, info.FullName).Replace("\\", "/"),
+                IsDirectory = info.Attributes.HasFlag(FileAttributes.Directory),
+                Size = info is FileInfo fileInfo ? fileInfo.Length : (long?)null
+            });
     }
 
-    public IEnumerable<FileSystemInfo> SearchFiles(string rootPath, string query, long? minSize = null, long? maxSize = null)
+    public FileItem GetFile(string filePath)
     {
-        var directoryInfo = new DirectoryInfo(rootPath);
-        return directoryInfo.EnumerateFileSystemInfos("*", SearchOption.AllDirectories)
-            .Where(f => f.Name.Contains(query, StringComparison.OrdinalIgnoreCase))
-            .Where(f => f is FileInfo fileInfo && (!minSize.HasValue || fileInfo.Length >= minSize)
-                                              && (!maxSize.HasValue || fileInfo.Length <= maxSize));
+        var fullPath = GetFullPath(filePath);
+
+        if (!File.Exists(fullPath))
+        {
+            throw new FileNotFoundException($"The file '{filePath}' does not exist.");
+        }
+
+        return new FileItem
+        {
+            Name = Path.GetFileName(fullPath),
+            Path = Path.GetRelativePath(_rootPath, fullPath).Replace("\\", "/"),
+            FullPath = fullPath,
+            IsDirectory = false,
+            Size = new FileInfo(fullPath).Length
+        };
     }
 
+    public async Task SaveFileAsync(IFormFile file, string? path)
+    {
+        var fullPath = GetFullPath(path);
 
+        if (!Directory.Exists(fullPath))
+        {
+            Directory.CreateDirectory(fullPath);
+        }
 
+        var filePath = Path.Combine(fullPath, file.FileName);
+        using var stream = new FileStream(filePath, FileMode.Create);
+        await file.CopyToAsync(stream);
+    }
+
+    public IEnumerable<FileItem> SearchFiles(string query)
+    {
+        return new DirectoryInfo(_rootPath).EnumerateFileSystemInfos("*", SearchOption.AllDirectories)
+            .Where(info => info.Name.Contains(query, StringComparison.OrdinalIgnoreCase))
+            .Select(info => new FileItem
+            {
+                Name = info.Name,
+                Path = Path.GetRelativePath(_rootPath, info.FullName).Replace("\\", "/"),
+                IsDirectory = info.Attributes.HasFlag(FileAttributes.Directory),
+                Size = info is FileInfo fileInfo ? fileInfo.Length : (long?)null
+            });
+    }
+
+    private string GetFullPath(string? path)
+    {
+        var fullPath = Path.GetFullPath(Path.Combine(_rootPath, path ?? string.Empty));
+
+        if (!fullPath.StartsWith(_rootPath, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new UnauthorizedAccessException("Access denied.");
+        }
+
+        return fullPath;
+    }
+}
+
+// FileItem Class
+public class FileItem
+{
+    public string Name { get; set; }
+    public string Path { get; set; }
+    public string FullPath { get; set; }
+    public bool IsDirectory { get; set; }
+    public long? Size { get; set; }
 }

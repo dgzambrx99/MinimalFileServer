@@ -24,15 +24,9 @@
             cursor: pointer;
         }
 
-        .btn-close-custom:hover {
-            background-color: darkred;
-        }
-
-        #preview-modal-body iframe {
-            border: none;
-            display: block;
-            margin: 0 auto;
-        }
+            .btn-close-custom:hover {
+                background-color: darkred;
+            }
 
         @media (max-width: 767px) {
             .list-group-item div a {
@@ -43,33 +37,47 @@
             }
         }
     </style>
-
     <script>
+        let currentPath = '';
+
         async function fetchFiles(path = '') {
             try {
-                const response = await fetch(`/api/files/${path}`);
+                currentPath = path;
+                const response = await fetch(`/api/files/${encodeURIComponent(path)}`);
+                if (!response.ok) {
+                    throw new Error(`Error fetching files: ${response.statusText}`);
+                }
+
                 const files = await response.json();
 
-                console.log('Fetched files:', files);
+                // Show or hide the "Go Back" button
+                const goBackButton = document.getElementById('go-back-button');
+                goBackButton.style.display = currentPath ? 'inline-block' : 'none';
 
                 document.getElementById('file-list').innerHTML = files.map(file => `
-                    <div class="list-group-item d-flex justify-content-between align-items-center">
-                        <div>
-                            ${file.isDirectory
-                                ? `<a href="#" onclick="fetchFiles('${file.path}')">${file.name}</a>`
-                                : `<a href="/api/files/download/${file.path}" download>${file.name}</a>`
-                            }
+                        <div class="list-group-item d-flex justify-content-between align-items-center">
+                            <div>
+                                ${file.isDirectory
+                        ? `<a href="#" onclick="fetchFiles('${file.path}')">${file.name}</a>`
+                        : `<a href="/api/files/download/${file.path}" download>${file.name}</a>`
+                    }
+                            </div>
+                            <div>
+                                ${!file.isDirectory ? `(${file.size !== null ? `${file.size} bytes` : 'Unknown size'})` : ''}
+                                ${!file.isDirectory ? `<button class="btn btn-link btn-sm" onclick="previewFile('${file.path}')">Preview</button>` : ''}
+                            </div>
                         </div>
-                        <div>
-                            ${!file.isDirectory ? `(${file.size !== null ? `${file.size} bytes` : 'Unknown size'})` : ''}
-                            ${!file.isDirectory ? `<button class="btn btn-link btn-sm" onclick="previewFile('${file.path}')">Preview</button>` : ''}
-                        </div>
-                    </div>`
-                ).join('');
+                    `).join('');
             } catch (error) {
                 console.error('Error fetching files:', error);
-                document.getElementById('file-list').innerHTML = `<p class="text-danger">Error loading files.</p>`;
+                document.getElementById('file-list').innerHTML = `<p class="text-danger">Error loading files. Please try again.</p>`;
             }
+        }
+
+        function goBack() {
+            // Calculate the parent directory
+            const parentPath = currentPath.split('/').slice(0, -1).join('/');
+            fetchFiles(parentPath);
         }
 
         async function uploadFiles(event) {
@@ -82,7 +90,8 @@
                     return;
                 }
 
-                const response = await fetch('/api/files/upload', {
+                // Include the current path in the upload URL
+                const response = await fetch(`/api/files/upload/${encodeURIComponent(currentPath)}`, {
                     method: 'POST',
                     body: formData
                 });
@@ -93,48 +102,62 @@
                 }
 
                 const result = await response.json();
-                if (result && result.Message) {
-                    alert(result.Message);
-                } else {
-                    alert('Upload completed, but no message was provided.');
-                }
+                alert(result?.Message || 'Upload completed successfully.');
 
-                fetchFiles();
-
+                // Refresh the file list in the current directory
+                fetchFiles(currentPath);
             } catch (error) {
-                console.error('Error uploading file: ', error);
+                console.error('Error uploading file:', error);
+                alert('Error uploading file. Please try again.');
             }
         }
+
 
         async function searchFiles() {
             try {
-                const query = document.getElementById('search-input').value;
+                const query = document.getElementById('search-input').value.trim();
+
+                // If the query is empty, show all files in the current directory
+                if (!query) {
+                    fetchFiles(currentPath); // Refresh the current directory
+                    return;
+                }
+
                 const response = await fetch(`/api/files/search?query=${encodeURIComponent(query)}`);
+                if (!response.ok) {
+                    throw new Error(`Error searching files: ${response.statusText}`);
+                }
+
                 const files = await response.json();
 
                 document.getElementById('file-list').innerHTML = files.map(file => `
-                    <div class="list-group-item d-flex justify-content-between align-items-center">
-                        <div>
-                            ${file.isDirectory
-                                ? `<a href="#" onclick="fetchFiles('${file.path}')">${file.name}</a>`
-                                : `<a href="/api/files/download/${file.path}" download>${file.name}</a>`
-                            }
-                        </div>
-                        <div>
-                            ${!file.isDirectory ? `(${file.size !== null ? `${file.size} bytes` : 'Unknown size'})` : ''}
-                            ${!file.isDirectory ? `<button class="btn btn-link btn-sm" onclick="previewFile('${file.path}')">Preview</button>` : ''}
-                        </div>
-                    </div>
-                `).join('');
-
+            <div class="list-group-item d-flex justify-content-between align-items-center">
+                <div>
+                    ${file.isDirectory
+                        ? `<a href="#" onclick="fetchFiles('${file.path}')">${file.name}</a>`
+                        : `<a href="/api/files/download/${file.path}" download>${file.name}</a>`
+                    }
+                </div>
+                <div>
+                    ${!file.isDirectory ? `(${file.size !== null ? `${file.size} bytes` : 'Unknown size'})` : ''}
+                    ${!file.isDirectory ? `<button class="btn btn-link btn-sm" onclick="previewFile('${file.path}')">Preview</button>` : ''}
+                </div>
+            </div>
+        `).join('');
             } catch (error) {
-                console.error('Error searching file:', error);
+                console.error('Error searching files:', error);
+                document.getElementById('file-list').innerHTML = `<p class="text-danger">Error searching files. Please try again.</p>`;
             }
         }
 
+
         async function previewFile(filePath) {
             try {
-                const response = await fetch(`/api/files/download/${filePath}`);
+                const response = await fetch(`/api/files/download/${encodeURIComponent(filePath)}`);
+                if (!response.ok) {
+                    throw new Error(`Error fetching file: ${response.statusText}`);
+                }
+
                 const blob = await response.blob();
                 const url = URL.createObjectURL(blob);
 
@@ -143,20 +166,21 @@
 
                 if (['jpg', 'jpeg', 'png', 'gif'].includes(fileExtension)) {
                     modalBody.innerHTML = `<img src="${url}" class="img-fluid" />`;
-                }
-                else if (['txt', 'log'].includes(fileExtension)) {
+                } else if (['txt', 'log'].includes(fileExtension)) {
                     const text = await blob.text();
                     modalBody.innerHTML = `<pre>${text}</pre>`;
-                }
-                else {
-                    modalBody.innerHTML = `<p>Preview not available for this file type.</p>`;
+                } else {
+                    modalBody.innerHTML = `
+                            <p>Preview not available for this file type.</p>
+                            <a href="/api/files/download/${filePath}" class="btn btn-primary">Download File</a>
+                        `;
                 }
 
                 const previewModal = new bootstrap.Modal(document.getElementById('preview-modal'));
                 previewModal.show();
-
             } catch (error) {
                 console.error('Error previewing file:', error);
+                alert('Error previewing file. Please try again.');
             }
         }
 
@@ -169,6 +193,7 @@
     </nav>
 
     <div class="mb-3">
+        <button id="go-back-button" class="btn btn-secondary mb-3" style="display: none;" onclick="goBack()">Go Back</button>
         <form id="upload-form" onsubmit="uploadFiles(event)">
             <div class="input-group">
                 <input class="form-control" type="file" name="files" multiple />
@@ -182,12 +207,7 @@
         <button class="btn btn-outline-secondary" onclick="searchFiles()">Search</button>
     </div>
 
-    <div id="file-list" class="list-group-flex justify-content-between align-items-center">
-    <div style="flex-grow: 1;">
-        <a href="#" onclick="fetchFiles('somePath')">This is a very long filename that should wrap or truncate...</a>
-    </div>
-    <button class="btn btn-link btn-sm" onclick="previewFile('filePath')">Preview</button>
-</div>
+    <div id="file-list" class="list-group"></div>
 
     <!-- Preview Modal -->
     <div class="modal fade" id="preview-modal" tabindex="-1" aria-labelledby="preview-modal-label" aria-hidden="true">
@@ -195,14 +215,11 @@
             <div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title" id="preview-modal-label">File Preview</h5>
-                    <button type="button" class="btn btn-danger btn-close-custom" data-bs-dismiss="modal" aria-label="Close">
-                        &times;
-                    </button>
+                    <button type="button" class="btn btn-danger btn-close-custom" data-bs-dismiss="modal" aria-label="Close">&times;</button>
                 </div>
                 <div class="modal-body text-center" id="preview-modal-body"></div>
             </div>
         </div>
     </div>
-
 </body>
 </html>
